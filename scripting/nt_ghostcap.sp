@@ -273,7 +273,7 @@ void UpdateGhostPickedUpStatus()
 	}
 	else if(icounter == -1)
 	{		
-		PushOnGhostDropped(lastCarrier);
+		PushOnGhostDrop(lastCarrier);
 	}
 }
 
