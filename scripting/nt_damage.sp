@@ -1,53 +1,66 @@
-#pragma semicolon 1
-
 #include <sourcemod>
 #include <sdktools>
 #include <neotokyo>
 
-public Plugin:myinfo =
+#pragma semicolon 1
+#pragma newdecls required
+
+#define DEBUG 0
+
+public Plugin myinfo =
 {
     name = "NEOTOKYO° Damage counter",
     author = "soft as HELL",
     description = "Shows detailed damage list on death/round end",
-    version = "0.6.1",
+    version = "0.7.3",
     url = ""
 };
 
-new Handle:g_hRewardAssists, Handle:g_hAssistDamage, Handle:g_hAssistPoints, Handle:g_hAssistMode;
+ConVar g_Cvar_AssistsEnabled, g_Cvar_AssistMode, g_Cvar_AssistDamage, g_Cvar_AssistPoints;
 
-new bool:g_SeenReport[MAXPLAYERS+1];
+bool g_SeenReport[MAXPLAYERS+1];
 
-new g_PlayerHealth[MAXPLAYERS+1];
-new g_PlayerAssist[MAXPLAYERS+1];
+int g_PlayerClass[MAXPLAYERS+1], g_PlayerHealth[MAXPLAYERS+1], g_PlayerAssist[MAXPLAYERS+1];
 
-new g_DamageDealt[MAXPLAYERS+1][MAXPLAYERS+1];
-new g_HitsMade[MAXPLAYERS+1][MAXPLAYERS+1];
+int g_DamageDealt[MAXPLAYERS+1][MAXPLAYERS+1];
+int g_HitsMade[MAXPLAYERS+1][MAXPLAYERS+1];
 
-new g_DamageTaken[MAXPLAYERS+1][MAXPLAYERS+1];
-new g_HitsTaken[MAXPLAYERS+1][MAXPLAYERS+1];
+int g_DamageTaken[MAXPLAYERS+1][MAXPLAYERS+1];
+int g_HitsTaken[MAXPLAYERS+1][MAXPLAYERS+1];
 
-public OnPluginStart()
+char class_names[][] = {
+	"-",
+	"Recon",
+	"Assault",
+	"Support"
+};
+
+public void OnPluginStart()
 {
-	g_hRewardAssists = CreateConVar("sm_ntdamage_assists", "0", "Enable/Disable rewarding of assists");
-	g_hAssistMode 	= CreateConVar("sm_ntdamage_assistmode", "0", "Switches assist mode");
-	g_hAssistDamage = CreateConVar("sm_ntdamage_damage", "45", "Damage required to trigger assist");
-	g_hAssistPoints = CreateConVar("sm_ntdamage_points", "1", "Points given for each assist");
+	g_Cvar_AssistsEnabled = CreateConVar("sm_ntdamage_assists", "0", "Enable/Disable rewarding of assists", _, true, 0.0, true, 1.0);
+	g_Cvar_AssistMode 	= CreateConVar("sm_ntdamage_assistmode", "0", "Switches assist mode", _, true, 0.0, true, 1.0);
+	g_Cvar_AssistDamage = CreateConVar("sm_ntdamage_damage", "45", "Damage required to trigger assist or total damage needed to reward assist", _, true, 45.0);
+	g_Cvar_AssistPoints = CreateConVar("sm_ntdamage_points", "1", "Points given for each assist", _, true, 1.0);
 
-	HookEvent("game_round_start", Event_RoundStart, EventHookMode_Post);
-	HookEvent("player_hurt", Event_PlayerHurt, EventHookMode_Post);
-	HookEvent("player_death", Event_PlayerDeath, EventHookMode_Post);
+	AutoExecConfig(true);
+
+	HookEvent("game_round_start", OnRoundStart, EventHookMode_Post);
+	HookEvent("player_spawn", OnPlayerSpawn, EventHookMode_Post);
+	HookEvent("player_hurt", OnPlayerHurt, EventHookMode_Post);
+	HookEvent("player_death", OnPlayerDeath, EventHookMode_Post);
 }
 
-public OnClientPutInServer(client)
+public void OnClientPutInServer(int client)
 {
 	g_SeenReport[client] = false;
 	g_PlayerAssist[client] = 0;
+	g_PlayerClass[client] = CLASS_NONE;
 }
 
-public Action:Event_RoundStart(Handle:event, const String:name[], bool:dontBroadcast)
+public Action OnRoundStart(Handle event, const char[] name, bool dontBroadcast)
 {
-	new client;
-	
+	int client, victim;
+
 	for(client = 1; client <= MaxClients; client++)
 	{
 		// Shows damage report now if player didn't die
@@ -60,8 +73,9 @@ public Action:Event_RoundStart(Handle:event, const String:name[], bool:dontBroad
 		// Resets everything
 		g_SeenReport[client] = false;
 		g_PlayerHealth[client] = 100;
+		g_PlayerClass[client] = CLASS_NONE;
 
-		for(new victim = 1; victim <= MaxClients; victim++)
+		for(victim = 1; victim <= MaxClients; victim++)
 		{
 			g_DamageDealt[client][victim] = 0;
 			g_HitsMade[client][victim] = 0;
@@ -69,25 +83,46 @@ public Action:Event_RoundStart(Handle:event, const String:name[], bool:dontBroad
 			g_DamageTaken[client][victim] = 0;
 			g_HitsTaken[client][victim] = 0;
 		}
-	}	
+	}
 }
 
-public Action:Event_PlayerHurt(Handle:event, const String:name[], bool:dontBroadcast)
+public void OnPlayerSpawn(Handle event, const char[] name, bool dontBroadcast)
 {
-	new victim = GetClientOfUserId(GetEventInt(event, "userid"));
-	new attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
+	// Player class can be wrong at this point so we will have to wait until game deals with that
+	CreateTimer(0.5, OnPlayerSpawnPost, GetEventInt(event, "userid"));
+}
 
-	new health = GetEventInt(event, "health"); // Only reports new health
-	
+public Action OnPlayerSpawnPost(Handle timer, int userid)
+{
+	int client = GetClientOfUserId(userid);
+
+	if(!IsValidClient(client) || GetClientTeam(client) <= TEAM_SPECTATOR)
+		return;
+
+	g_PlayerClass[client] = GetPlayerClass(client);
+	g_PlayerHealth[client] = GetClientHealth(client);
+
+	#if DEBUG > 0
+	PrintToChatAll("[OnPlayerSpawnPost] Player %N (%d) spawned with class %d and %d health", client, client, g_PlayerClass[client], g_PlayerHealth[client]);
+	#endif
+}
+
+public Action OnPlayerHurt(Handle event, const char[] name, bool dontBroadcast)
+{
+	int victim = GetClientOfUserId(GetEventInt(event, "userid"));
+	int attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
+
+	int health = GetEventInt(event, "health"); // Only reports new health
+
 	// Calculate damage
-	new damage = g_PlayerHealth[victim] - health;
-	
+	int damage = g_PlayerHealth[victim] - health;
+
 	// Update current health
 	g_PlayerHealth[victim] = health;
 
 	if(!IsValidClient(attacker) || (victim == attacker))
 		return;
-	
+
 	g_DamageDealt[attacker][victim] += damage;
 	g_HitsMade[attacker][victim] += 1;
 
@@ -95,33 +130,33 @@ public Action:Event_PlayerHurt(Handle:event, const String:name[], bool:dontBroad
 	g_HitsTaken[victim][attacker] += 1;
 }
 
-public Event_PlayerDeath(Handle:event, const String:name[], bool:dontBroadcast)
+public void OnPlayerDeath(Handle event, const char[] name, bool dontBroadcast)
 {
-	new victim = GetClientOfUserId(GetEventInt(event, "userid"));
-	new attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
+	int victim = GetClientOfUserId(GetEventInt(event, "userid"));
+	int attacker = GetClientOfUserId(GetEventInt(event, "attacker"));
 
 	if(!IsValidClient(victim))
 		return;
 
 	DamageReport(victim);
 
-	if(GetConVarInt(g_hRewardAssists) > 0)
-		RewardAssists(victim, attacker, GetConVarInt(g_hAssistMode));
+	if(g_Cvar_AssistsEnabled.BoolValue)
+		RewardAssists(victim, attacker, g_Cvar_AssistMode.IntValue);
 }
 
-DamageReport(client)
+void DamageReport(int client)
 {
-	new totalDamageDealt, totalDamageTaken, totalHitsDealt, totalHitsTaken, victim, attacker;
+	int totalDamageDealt, totalDamageTaken, totalHitsDealt, totalHitsTaken, victim, attacker;
 
 	PrintToConsole(client, "------------------------------------------------");
 	for(victim = 1; victim <= MaxClients; victim++)
 	{
+		if(!IsValidClient(victim))
+			continue;
+
 		if((g_DamageDealt[client][victim] > 0) && (g_HitsMade[client][victim] > 0))
 		{
-			if(!IsValidClient(victim))
-				continue;
-
-			PrintToConsole(client, "Damage dealt to %N: %i in %i hits", victim, g_DamageDealt[client][victim], g_HitsMade[client][victim]);
+			PrintToConsole(client, "Damage dealt to %N [%s]: %i in %i hits", victim, class_names[g_PlayerClass[victim]], g_DamageDealt[client][victim], g_HitsMade[client][victim]);
 
 			totalDamageDealt += g_DamageDealt[client][victim];
 			totalHitsDealt   += g_HitsMade[client][victim];
@@ -135,7 +170,7 @@ DamageReport(client)
 
 		if((g_DamageTaken[client][attacker] > 0) && (g_HitsTaken[client][attacker] > 0))
 		{
-			PrintToConsole(client, "Damage taken from %N: %i in %i hits", attacker, g_DamageTaken[client][attacker], g_HitsTaken[client][attacker]);
+			PrintToConsole(client, "Damage taken from %N [%s]: %i in %i hits", attacker, class_names[g_PlayerClass[attacker]], g_DamageTaken[client][attacker], g_HitsTaken[client][attacker]);
 
 			totalDamageTaken += g_DamageTaken[client][attacker];
 			totalHitsTaken	 += g_HitsTaken[client][attacker];
@@ -149,12 +184,12 @@ DamageReport(client)
 	g_SeenReport[client] = true;
 }
 
-RewardAssists(client, killer, mode)
+void RewardAssists(int client, int killer, int mode)
 {
-	new damage, hits, attacker;
+	int damage, hits, attacker;
 
-	new target_damage = GetConVarInt(g_hAssistDamage);
-	new reward_points = GetConVarInt(g_hAssistPoints);
+	int target_damage = g_Cvar_AssistDamage.IntValue;
+	int reward_points = g_Cvar_AssistPoints.IntValue;
 
 	for(attacker = 1; attacker <= MaxClients; attacker++)
 	{
@@ -188,7 +223,7 @@ RewardAssists(client, killer, mode)
 				LogKillAssist(attacker);
 			}
 			case 1: // Sums all assisted damage and gives out X points after X damage done
-			{ 
+			{
 				PrintToChat(attacker, "[NT°] You assisted killing %N by doing %i damage", client, damage);
 				PrintToConsole(attacker, "[NT°] You assisted killing %N by doing %i damage", client, damage);
 
@@ -212,11 +247,12 @@ RewardAssists(client, killer, mode)
 	}
 }
 
-LogKillAssist(client)
+void LogKillAssist(int client)
 {
 	// Log kill_assist event
-	new userID, String:steamID[64], String:team[18];
-	
+	int userID;
+	char steamID[64], team[18];
+
 	userID = GetClientUserId(client);
 	GetClientAuthId(client, AuthId_Steam2, steamID, 64);
 	GetTeamName(GetClientTeam(client), team, sizeof(team));
@@ -224,7 +260,7 @@ LogKillAssist(client)
 	LogToGame("\"%N<%d><%s><%s>\" triggered \"kill_assist\"", client, userID, steamID, team);
 }
 
-AddPlayerXP(client, xp)
+void AddPlayerXP(int client, int xp)
 {
 	SetPlayerXP(client, GetPlayerXP(client) + xp);
 	UpdatePlayerRank(client);

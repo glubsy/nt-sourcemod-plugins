@@ -18,5 +18,15 @@ public OnGhostSpawn(ghost)
 
 public OnGhostCapture(client)
 {
-	PrintToChatAll("%N retrieved the ghost!", client);
+	PrintToChatAll("%N (%d) retrieved the ghost!", client, client);
+}
+
+public OnGhostPickUp(client)
+{
+  PrintToChatAll("%N (%d) picked up the ghost!", client, client);
+}
+
+public OnGhostDrop(client)
+{
+  PrintToChatAll("%N (%d) dropped the ghost!", client, client);
 }

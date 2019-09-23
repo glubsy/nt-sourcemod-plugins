@@ -9,12 +9,15 @@
 #define SF_NORESPAWN (1 << 30)
 #define EF_NODRAW 32
 
+// set to true if you want to enable taking weapons with +use (f by default)
+#define ENABLE_USE false
+
 public Plugin myinfo = 
 {
 	name = "NEOTOKYO° Weapon Drop Tweaks",
 	author = "soft as HELL",
 	description = "Drops weapon with ammo and disables ammo pickup",
-	version = "0.7.0",
+	version = "0.7.5",
 	url = ""
 }
 
@@ -40,12 +43,26 @@ public void OnPluginStart()
 			OnClientPutInServer(client);
 		}
 	}
+
+	#if DEBUG > 0
+	RegConsoleCmd("sm_wipe", CommandWipe);
+	#endif
+
+	// Clean up dead weapons
+	CreateTimer(60.0, WipeDeadWeapons, _, TIMER_REPEAT);
 }
 
 public void OnClientPutInServer(int client)
 {
+	#if DEBUG > 0
+	PrintToServer("OnClientPutInServer: Hooking and resetting use and swap time for %N (%d)", client, client);
+	#endif
+
 	SDKHook(client, SDKHook_WeaponEquipPost, OnWeaponEquip);
 	SDKHook(client, SDKHook_WeaponDropPost, OnWeaponDrop);
+
+	g_fLastWeaponUse[client] = 0.0;
+	g_fLastWeaponSwap[client] = 0.0;
 }
 
 public Action OnPlayerDeath(Handle event, const char[] name, bool dontBroadcast)
@@ -81,24 +98,21 @@ public Action OnWeaponTouch(int weapon, int client)
 		char classname2[32];
 		if(GetEntityClassname(currentweapon, classname2, 32) && StrEqual(classname, classname2))
 		{
-			#if DEBUG > 0
-			PrintToChat(client, "OnWeaponTouch: Picking up %s [%d] ammo from %s [%d]", classname, currentweapon, classname2, weapon);
+			#if DEBUG > 2
+			PrintToChat(client, "OnWeaponTouch: Blocking picking up %s [%d] ammo from %s [%d]", classname, currentweapon, classname2, weapon);
 			#endif
 
-			return Plugin_Handled; // Doesn't block it! ;-;
+			return Plugin_Handled;
 		}
 	}
-	
+
 	return Plugin_Continue;
 }
 
-public void OnWeaponEquip(int client, int weapon) 
-{ 
+public void OnWeaponEquip(int client, int weapon)
+{
 	if(!IsValidEdict(weapon) || !IsPlayerAlive(client))
 		return;
-
-	// Remove current hook
-	SDKUnhook(weapon, SDKHook_StartTouch, OnWeaponTouch);
 
 	char classname[32];
 	if(!GetEntityClassname(weapon, classname, sizeof(classname)))
@@ -113,7 +127,7 @@ public void OnWeaponEquip(int client, int weapon)
 
 	if(ammo < 0)
 		return; // Weapon wasn't dropped
-	
+
 	// Remove secondary ammo
 	SetEntProp(weapon, Prop_Data, "m_iSecondaryAmmoCount", -1);
 
@@ -121,8 +135,8 @@ public void OnWeaponEquip(int client, int weapon)
 	SetWeaponAmmo(client, ammotype, current_ammo + ammo);
 
 	#if DEBUG > 0
-	PrintToServer("[nt_drop] %N (%d) picked up %s with %d ammo", client, client, classname, ammo);
-	PrintToChat(client, "picked up %s with %d ammo", classname, ammo);
+	PrintToServer("[nt_drop] %N (%d) picked up %d %s with %d ammo", client, client, weapon, classname, ammo);
+	PrintToChat(client, "picked up %d %s with %d ammo", weapon, classname, ammo);
 	#endif
 }
 
@@ -138,9 +152,6 @@ public void OnWeaponDrop(int client, int weapon)
 	if(!IsWeaponDroppable(classname))
 		return;
 
-	// Convert index to entity reference
-	weapon = EntIndexToEntRef(weapon);
-
 	int ammotype = GetAmmoType(weapon);
 	int ammo = GetWeaponAmmo(client, ammotype);
 
@@ -151,6 +162,9 @@ public void OnWeaponDrop(int client, int weapon)
 
 	// Store ammo as secondary on weapon since it isn't used for anything
 	SetEntProp(weapon, Prop_Data, "m_iSecondaryAmmoCount", ammo);
+
+	// Convert index to entity reference
+	weapon = EntIndexToEntRef(weapon);
 
 	// Have to delay spawnflag setting for a bit
 	CreateTimer(0.1, ChangeSpawnFlags, weapon);
@@ -169,11 +183,12 @@ public void OnWeaponDrop(int client, int weapon)
 		SetWeaponAmmo(client, ammotype, new_ammo);
 	}
 
-	SDKHook(weapon, SDKHook_StartTouch, OnWeaponTouch);
+	SDKHook(weapon, SDKHook_Touch, OnWeaponTouch);
 }
 
+#if ENABLE_USE
 public Action OnPlayerRunCmd(int client, int &buttons)
-{	
+{
 	if(buttons & IN_USE)
 	{
 		// Get the entity a client is aiming at
@@ -231,12 +246,17 @@ public Action OnPlayerRunCmd(int client, int &buttons)
 
 				// Press toss button once
 				buttons |= IN_TOSS; // If only SDKHooks_DropWeapon(client, currentweapon) worked
-				
+
 				// Set swap time to block weapon pickup from touch
 				g_fLastWeaponSwap[client] = GetGameTime();
 			}
 
+			#if DEBUG > 0
+			PrintToChatAll("[OnPlayerRunCmd] %d %d", client, weapon);
+			#endif
+
 			DataPack pack;
+
 			CreateDataTimer(0.1, TakeWeapon, pack);
 
 			// Pass data to timer
@@ -248,23 +268,46 @@ public Action OnPlayerRunCmd(int client, int &buttons)
 	}
 }
 
-public Action TakeWeapon(Handle timer, Handle pack)
+public Action TakeWeapon(Handle timer, DataPack pack)
 {
-	ResetPack(pack);
+	pack.Reset();
 
-	int client = ReadPackCell(pack);
-	int weapon = ReadPackCell(pack);
+	int client = pack.ReadCell();
+	int weapon = pack.ReadCell();
 
-	// Equip weapon
-	EquipPlayerWeapon(client, weapon);
+	pack.Close();
 
-	// Switch to active weapon
-	SetEntPropEnt(client, Prop_Data, "m_hActiveWeapon", weapon);
-	ChangeEdictState(client, FindDataMapInfo(client, "m_hActiveWeapon"));
+	#if DEBUG > 0
+	PrintToChatAll("[TakeWeapon] %d %d", client, weapon);
+	#endif
+
+	if(!IsValidEdict(weapon))
+		return;
+
+	int slot = GetWeaponSlot(weapon);
+	int currentweapon = GetPlayerWeaponSlot(client, slot);
+
+	if((currentweapon != -1) && IsValidEdict(currentweapon))
+	{
+		#if DEBUG > 0
+		PrintToChatAll("[TakeWeapon] %d can't equip %d because we picked up %d already", client, weapon, currentweapon);
+		#endif
+		return;
+	} else {
+		// Equip weapon
+		EquipPlayerWeapon(client, weapon);
+		// Switch to active weapon
+		SetEntPropEnt(client, Prop_Data, "m_hActiveWeapon", weapon);
+		ChangeEdictState(client, FindDataMapInfo(client, "m_hActiveWeapon"));
+	}
 }
+#endif
 
 public Action ChangeSpawnFlags(Handle timer, int weapon)
 {
+	if(!IsValidEdict(weapon))
+		return;
+
 	// Prepare spawnflags datamap offset
 	static int spawnflags;
 
@@ -290,3 +333,53 @@ bool IsWeaponDroppable(const char[] classname)
 
 	return true;
 }
+
+public Action WipeDeadWeapons(Handle timer)
+{
+	#if DEBUG > 0
+	int removed;
+	#endif
+
+	char classname[64];
+
+	for (int i = MAXPLAYERS+1; i < 2048; i++)
+	{
+		if (IsValidEntity(i))
+		{
+			GetEntityClassname(i, classname, sizeof(classname));
+
+			if (StrContains(classname, "weapon_") != -1)
+			{
+				int fEffects = GetEntProp(i, Prop_Data, "m_fEffects");
+				if(fEffects & EF_NODRAW)
+				{
+					// Player weapons aren't drawn until you have switched to them at least once, avoid removing them by checking for no valid owner
+					int owner = GetEntPropEnt(i, Prop_Data, "m_hOwnerEntity");
+
+					if(owner != -1)
+						continue;
+
+					AcceptEntityInput(i, "Kill");
+
+					#if DEBUG > 0
+					PrintToServer("Removing %d %s", i, classname);
+					removed++;
+					#endif
+				}
+			}
+		}
+	}
+
+	#if DEBUG > 0
+	PrintToServer("Removed %d dead weapons", removed);
+	#endif
+}
+
+#if DEBUG > 0
+public Action CommandWipe(int client, int args)
+{
+	WipeDeadWeapons(INVALID_HANDLE);
+
+	return Plugin_Handled;
+}
+#endif

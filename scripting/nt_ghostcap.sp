@@ -7,21 +7,22 @@
 #pragma newdecls required
 
 #define DEBUG 0
+#define PRECISE 0
 #define MAXCAPZONES 6
 #define INACCURACY 0.35
 
-#define PLUGIN_VERSION	"1.6"
+#define PLUGIN_VERSION	"1.7.1"
 
 public Plugin myinfo =
 {
 	name = "NEOTOKYO° Ghost capture event",
-	author = "soft as HELL",
+	author = "soft as HELL + glub",
 	description = "Logs ghost capture event",
 	version = PLUGIN_VERSION,
 	url = ""
 };
 
-Handle g_hRoundTime, g_hForwardCapture, g_hForwardSpawn, g_hForwardPickedUp, g_hForwardDropped;
+Handle g_hRoundTime, g_hForwardCapture, g_hForwardSpawn, g_hForwardPickUp, g_hForwardDrop;
 
 // Globals
 int ghost, totalCapzones, lastCarrier;
@@ -42,12 +43,62 @@ public void OnPluginStart()
 
 	g_hForwardCapture = CreateGlobalForward("OnGhostCapture", ET_Event, Param_Cell);
 	g_hForwardSpawn = CreateGlobalForward("OnGhostSpawn", ET_Event, Param_Cell);
-	g_hForwardPickedUp = CreateGlobalForward("OnGhostPickedUp", ET_Event, Param_Cell);
-	g_hForwardDropped = CreateGlobalForward("OnGhostDropped", ET_Event, Param_Cell);
+	g_hForwardPickUp = CreateGlobalForward("OnGhostPickUp", ET_Event, Param_Cell);
+	g_hForwardDrop = CreateGlobalForward("OnGhostDrop", ET_Event, Param_Cell);
 
 	HookEvent("game_round_start", OnRoundStart, EventHookMode_Post);
 
+	// Hook again if plugin is restarted
+	for(int client = 1; client <= MaxClients; client++)
+	{
+		if(IsValidClient(client))
+		{
+			OnClientPutInServer(client);
+		}
+	}
+
+	#if PRECISE < 1
 	CreateTimer(0.25, CheckGhostPosition, _, TIMER_REPEAT);
+	#endif
+}
+
+public void OnClientPutInServer(int client)
+{
+	SDKHook(client, SDKHook_WeaponEquipPost, OnWeaponEquip);
+	SDKHook(client, SDKHook_WeaponDropPost, OnWeaponDrop);
+}
+
+public void OnWeaponEquip(int client, int weapon)
+{
+	if(!IsValidEdict(weapon) || !IsPlayerAlive(client))
+		return;
+
+	char classname[32];
+	if(!GetEntityClassname(weapon, classname, sizeof(classname)))
+		return; // Can't get class name
+
+	if(StrEqual(classname, "weapon_ghost"))
+	{
+		lastCarrier = client;
+		g_bGhostIsHeld = true;
+		UpdateGhostPickedUpStatus();
+	}
+}
+
+public void OnWeaponDrop(int client, int weapon)
+{
+	if(!IsValidEdict(weapon) || !IsPlayerAlive(client))
+		return;
+
+	char classname[32];
+	if(!GetEntityClassname(weapon, classname, sizeof(classname)))
+		return;
+
+	if(StrEqual(classname, "weapon_ghost"))
+	{
+		g_bGhostIsHeld = false;
+		UpdateGhostPickedUpStatus();
+	}
 }
 
 public void OnMapEnd()
@@ -123,6 +174,13 @@ public void OnRoundStart(Handle event, const char[] name, bool dontBroadcast)
 	roundReset = true;
 }
 
+#if PRECISE > 0
+public void OnGameFrame()
+{
+	CheckGhostPosition(INVALID_HANDLE);
+}
+#endif
+
 public Action CheckGhostPosition(Handle timer)
 {
 	if(!totalCapzones || !IsValidEdict(ghost))
@@ -195,7 +253,7 @@ void UpdateGhostPickedUpStatus()
 		else
 			icounter += 1;
 	}
-	else if(!g_bGhostIsHeld)
+	else
 	{
 		if(icounter >= 1)
 			icounter -= 2;
@@ -211,7 +269,7 @@ void UpdateGhostPickedUpStatus()
 
 	if(icounter == 1)
 	{
-		PushOnGhostPickup(lastCarrier);
+		PushOnGhostPickUp(lastCarrier);
 	}
 	else if(icounter == -1)
 	{		
@@ -286,7 +344,7 @@ void LogGhostCapture(int client, int team)
 void PushOnGhostCapture(int client)
 {
 	#if DEBUG > 0
-	PrintToServer("[nt_ghostcap] Ghost captured by (%d)! Pushing OnGhostCapture forward", client);
+	PrintToServer("[nt_ghostcap] Ghost captured by %N (%d)! Pushing OnGhostCapture forward", client, client);
 	#endif
 
 	Call_StartForward(g_hForwardCapture);
@@ -305,7 +363,7 @@ void PushOnGhostSpawn(int entity)
 	Call_Finish();
 }
 
-void PushOnGhostPickup(int client)
+void PushOnGhostPickUp(int client)
 {
 	if(client < 1 || client > MaxClients)
 		return;
@@ -314,11 +372,11 @@ void PushOnGhostPickup(int client)
 	PrintToServer("[nt_ghostcap] Ghost picked up by %N (%d)! Pushing OnGhostPickedUp forward", client, client);
 	#endif
 
-	Call_StartForward(g_hForwardPickedUp);
+	Call_StartForward(g_hForwardPickUp);
 	Call_PushCell(client);
 	Call_Finish();
 }
-void PushOnGhostDropped(int client)
+void PushOnGhostDrop(int client)
 {
 	if(client < 1 || client > MaxClients)
 		return;
@@ -327,7 +385,7 @@ void PushOnGhostDropped(int client)
 	PrintToServer("[nt_ghostcap] Ghost dropped by %N (%d)! Pushing OnGhostDropped forward", client, client);
 	#endif
 	
-	Call_StartForward(g_hForwardDropped);
+	Call_StartForward(g_hForwardDrop);
 	Call_PushCell(client);
 	Call_Finish();
 }

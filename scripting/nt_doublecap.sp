@@ -74,7 +74,7 @@ public Action timer_RemoveGhost(Handle timer)
 			PrintToServer("Timer: removed ghost %i classname %s!", ghost, classname);
 			#endif
 			
-			RemoveEdict(ghost);
+			AcceptEntityInput(ghost, "Kill");
 		}
 	}
 	
@@ -124,7 +124,9 @@ void RemoveGhost(int client)
 
 	// Delete ghost
 	if(IsValidEdict(ghost))
-		RemoveEdict(ghost);
+	{
+		AcceptEntityInput(ghost, "Kill");
+	}
 }
 
 public void OnMapEnd()
