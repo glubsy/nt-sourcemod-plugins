@@ -18,6 +18,7 @@ public Plugin myinfo =
 int ghost, carrier;
 Handle convar_roundtimelimit = INVALID_HANDLE;
 Handle KillGhostTimer = INVALID_HANDLE;
+Handle convar_nt_ghostexplodes = INVALID_HANDLE;
 
 public void OnPluginStart()
 {
@@ -25,6 +26,8 @@ public void OnPluginStart()
 	HookEvent("game_round_start", OnRoundStart); //needs start in case we foce restart
 	
 	convar_roundtimelimit = FindConVar("neo_round_timelimit");
+	// nt_ghostcapsfx crashes the server if using kill input on ghost at the same time
+	convar_nt_ghostexplodes = FindConVar("nt_ghostexplodes");
 }
 
 public Action OnRoundStart(Handle event, const char[] name, bool dontBroadcast)
@@ -74,7 +77,10 @@ public Action timer_RemoveGhost(Handle timer)
 			PrintToServer("Timer: removed ghost %i classname %s!", ghost, classname);
 			#endif
 			
-			AcceptEntityInput(ghost, "Kill");
+			if (convar_nt_ghostexplodes != INVALID_HANDLE)
+				RemoveEdict(ghost);
+			else
+				AcceptEntityInput(ghost, "Kill");
 		}
 	}
 	
@@ -125,7 +131,10 @@ void RemoveGhost(int client)
 	// Delete ghost
 	if(IsValidEdict(ghost))
 	{
-		AcceptEntityInput(ghost, "Kill");
+		if (convar_nt_ghostexplodes != INVALID_HANDLE)
+			RemoveEdict(ghost);
+		else
+			AcceptEntityInput(ghost, "Kill");
 	}
 }
 
